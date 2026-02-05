@@ -86,6 +86,17 @@ class ClientConfig:
     # Additional credentials as dict
     credentials: dict[str, Any] = field(default_factory=dict)
 
+    # Retry configuration for transient failures
+    retry_max_attempts: int = field(
+        default_factory=lambda: int(os.environ.get("MONIKER_RETRY_MAX_ATTEMPTS", "3"))
+    )
+    retry_backoff_factor: float = field(
+        default_factory=lambda: float(os.environ.get("MONIKER_RETRY_BACKOFF_FACTOR", "0.5"))
+    )
+    retry_status_codes: tuple[int, ...] = field(
+        default_factory=lambda: (502, 503, 504)
+    )
+
     def get_credential(self, source_type: str, key: str) -> str | None:
         """Get a credential for a source type."""
         # Check specific attributes first

@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from ..client import ResolvedSource
     from ..config import ClientConfig
 
-from .base import BaseAdapter
+from .base import BaseAdapter, AdapterResult
 from .snowflake import SnowflakeAdapter
 from .oracle import OracleAdapter
 from .rest import RestAdapter
@@ -47,6 +47,7 @@ __all__ = [
     "get_adapter",
     "register_adapter",
     "BaseAdapter",
+    "AdapterResult",
     "SnowflakeAdapter",
     "OracleAdapter",
     "RestAdapter",
