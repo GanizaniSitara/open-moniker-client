@@ -83,8 +83,24 @@ class ClientConfig:
         default_factory=lambda: os.environ.get("ORACLE_PASSWORD")
     )
 
+    mssql_user: str | None = field(
+        default_factory=lambda: os.environ.get("MSSQL_USER")
+    )
+    mssql_password: str | None = field(
+        default_factory=lambda: os.environ.get("MSSQL_PASSWORD")
+    )
+
     # Additional credentials as dict
     credentials: dict[str, Any] = field(default_factory=dict)
+
+    # Deprecation awareness (feature toggle)
+    deprecation_enabled: bool = field(
+        default_factory=lambda: os.environ.get("MONIKER_DEPRECATION_ENABLED", "false").lower() == "true"
+    )
+    warn_on_deprecated: bool = field(
+        default_factory=lambda: os.environ.get("MONIKER_WARN_DEPRECATED", "true").lower() == "true"
+    )
+    deprecation_callback: Any = None  # callable(path, message, successor)
 
     def get_credential(self, source_type: str, key: str) -> str | None:
         """Get a credential for a source type."""
@@ -101,6 +117,11 @@ class ClientConfig:
                 return self.oracle_user
             if key == "password":
                 return self.oracle_password
+        elif source_type == "mssql":
+            if key == "user":
+                return self.mssql_user
+            if key == "password":
+                return self.mssql_password
 
         # Check credentials dict
         return self.credentials.get(f"{source_type}_{key}")

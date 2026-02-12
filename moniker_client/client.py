@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import time
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -11,6 +13,7 @@ import httpx
 from .auth import get_auth_headers
 from .config import ClientConfig
 from .adapters import get_adapter
+from .resilience import RetryConfig, retry_with_backoff, ClientCircuitBreaker
 
 
 class MonikerError(Exception):
@@ -153,6 +156,37 @@ class TreeNode:
 
 
 @dataclass
+class SearchResult:
+    """Result from catalog search."""
+    query: str
+    total_results: int
+    results: list[dict[str, Any]]
+
+
+@dataclass
+class CatalogStats:
+    """Catalog statistics."""
+    total_monikers: int
+    by_status: dict[str, int]
+    by_source_type: dict[str, int]
+    by_classification: dict[str, int]
+    ownership_coverage: float
+
+
+@dataclass
+class SchemaInfo:
+    """Schema information for a moniker."""
+    moniker: str
+    path: str
+    columns: list[dict[str, Any]]
+    primary_key: list[str] | None = None
+    description: str | None = None
+    granularity: str | None = None
+    semantic_tags: list[str] = field(default_factory=list)
+    related_monikers: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ResolvedSource:
     """Resolved source information from the service."""
     moniker: str
@@ -166,6 +200,17 @@ class ResolvedSource:
     ownership: dict[str, Any]
     binding_path: str
     sub_path: str | None
+    # Deprecation / migration fields
+    status: str | None = None
+    deprecation_message: str | None = None
+    successor: str | None = None
+    sunset_deadline: str | None = None
+    migration_guide_url: str | None = None
+    redirected_from: str | None = None
+
+    @property
+    def is_deprecated(self) -> bool:
+        return self.status == "deprecated"
 
 
 class Moniker:
@@ -299,6 +344,10 @@ class Moniker:
         """
         return self.client.tree(self._path, depth=depth)
 
+    def schema(self) -> SchemaInfo:
+        """Get schema information for this moniker."""
+        return self.client.schema(self._path)
+
     def print_tree(
         self,
         depth: int | None = None,
@@ -341,6 +390,10 @@ class MonikerClient:
     # Local cache of resolutions
     _cache: dict[str, tuple[ResolvedSource, float]] = field(default_factory=dict, init=False)
 
+    # Resilience
+    _retry_config: RetryConfig = field(default_factory=RetryConfig, init=False)
+    _circuit_breaker: ClientCircuitBreaker = field(default_factory=ClientCircuitBreaker, init=False)
+
     def read(self, moniker: str, **kwargs) -> Any:
         """
         Read data for a moniker.
@@ -357,6 +410,8 @@ class MonikerClient:
         error_message = None
         row_count = None
         source_type = None
+        deprecated = False
+        successor = None
 
         try:
             # Normalize moniker
@@ -366,6 +421,8 @@ class MonikerClient:
             # Resolve moniker to source info
             resolved = self._resolve(moniker)
             source_type = resolved.source_type
+            deprecated = resolved.is_deprecated
+            successor = resolved.successor
 
             # Get adapter for source type
             adapter = get_adapter(resolved.source_type)
@@ -397,6 +454,8 @@ class MonikerClient:
                     source_type=source_type,
                     row_count=row_count,
                     error_message=error_message,
+                    deprecated=deprecated,
+                    successor=successor,
                 )
 
     def describe(self, moniker: str) -> dict[str, Any]:
@@ -458,6 +517,128 @@ class MonikerClient:
         if not moniker.startswith("moniker://"):
             moniker = f"moniker://{moniker}"
         return self._resolve(moniker)
+
+    def batch_resolve(self, monikers: list[str]) -> dict[str, ResolvedSource]:
+        """
+        Resolve multiple monikers in a single call.
+
+        More efficient than resolving one at a time when you need
+        connection info for many monikers.
+
+        Args:
+            monikers: List of moniker paths
+
+        Returns:
+            Dict mapping moniker path to ResolvedSource
+        """
+        results = {}
+        # Normalize monikers
+        normalized = []
+        for m in monikers:
+            if not m.startswith("moniker://"):
+                m = f"moniker://{m}"
+            normalized.append(m)
+
+        # Check cache first, collect uncached
+        uncached = []
+        for m in normalized:
+            if self.config.cache_ttl > 0 and m in self._cache:
+                resolved, cached_at = self._cache[m]
+                if time.time() - cached_at < self.config.cache_ttl:
+                    results[m.replace("moniker://", "")] = resolved
+                    continue
+            uncached.append(m)
+
+        # Resolve uncached via batch endpoint
+        if uncached:
+            self._circuit_breaker.before_request()
+            try:
+                paths = [m.replace("moniker://", "") for m in uncached]
+                with httpx.Client(timeout=self.config.timeout) as client:
+                    response = client.post(
+                        f"{self.config.service_url}/resolve/batch",
+                        headers=self._get_headers(),
+                        json={"monikers": [f"moniker://{p}" for p in paths]},
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+
+                for item in data.get("results", []):
+                    resolved = ResolvedSource(
+                        moniker=item["moniker"],
+                        path=item["path"],
+                        source_type=item["source_type"],
+                        connection=item["connection"],
+                        query=item.get("query"),
+                        params=item.get("params", {}),
+                        schema_info=item.get("schema_info"),
+                        read_only=item.get("read_only", True),
+                        ownership=item.get("ownership", {}),
+                        binding_path=item.get("binding_path", ""),
+                        sub_path=item.get("sub_path"),
+                        status=item.get("status"),
+                        deprecation_message=item.get("deprecation_message"),
+                        successor=item.get("successor"),
+                        sunset_deadline=item.get("sunset_deadline"),
+                        migration_guide_url=item.get("migration_guide_url"),
+                        redirected_from=item.get("redirected_from"),
+                    )
+                    path = item["path"]
+                    results[path] = resolved
+
+                    # Emit deprecation warnings (gated by feature toggle)
+                    if (getattr(self.config, 'deprecation_enabled', False)
+                            and resolved.is_deprecated
+                            and getattr(self.config, 'warn_on_deprecated', True)):
+                        msg = (
+                            f"Moniker '{resolved.path}' is deprecated."
+                            f"{' ' + resolved.deprecation_message if resolved.deprecation_message else ''}"
+                            f"{' Successor: ' + resolved.successor if resolved.successor else ''}"
+                        )
+                        warnings.warn(msg, DeprecationWarning, stacklevel=3)
+                        logging.getLogger("moniker_client").warning(msg)
+
+                        callback = getattr(self.config, 'deprecation_callback', None)
+                        if callback:
+                            callback(resolved.path, resolved.deprecation_message, resolved.successor)
+
+                    # Cache
+                    if self.config.cache_ttl > 0:
+                        self._cache[f"moniker://{path}"] = (resolved, time.time())
+
+                self._circuit_breaker.on_success()
+            except Exception as e:
+                self._circuit_breaker.on_failure()
+                raise
+
+        return results
+
+    def batch_read(self, monikers: list[str], **kwargs) -> dict[str, Any]:
+        """
+        Read data for multiple monikers.
+
+        Resolves all monikers first (batched), then fetches data for each.
+
+        Args:
+            monikers: List of moniker paths
+            **kwargs: Additional parameters for adapters
+
+        Returns:
+            Dict mapping moniker path to data (or exception)
+        """
+        # Batch resolve
+        resolved_map = self.batch_resolve(monikers)
+
+        results = {}
+        for path, resolved in resolved_map.items():
+            try:
+                adapter = get_adapter(resolved.source_type)
+                data = adapter.fetch(resolved, self.config, **kwargs)
+                results[path] = data
+            except Exception as e:
+                results[path] = e
+
+        return results
 
     def fetch(
         self,
@@ -666,8 +847,94 @@ class MonikerClient:
 
         return build_tree(data)
 
+    def search(
+        self,
+        query: str,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> SearchResult:
+        """
+        Search the catalog for monikers matching a query.
+
+        Args:
+            query: Search query string
+            status: Optional status filter (e.g., 'active', 'deprecated')
+            limit: Maximum number of results
+
+        Returns:
+            SearchResult with matching catalog entries
+        """
+        params: dict[str, Any] = {"q": query, "limit": limit}
+        if status is not None:
+            params["status"] = status
+
+        with httpx.Client(timeout=self.config.timeout) as client:
+            response = client.get(
+                f"{self.config.service_url}/catalog/search",
+                headers=self._get_headers(),
+                params=params,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        return SearchResult(
+            query=query,
+            total_results=data.get("total_results", len(data.get("results", []))),
+            results=data.get("results", []),
+        )
+
+    def catalog_stats(self) -> CatalogStats:
+        """
+        Get catalog statistics.
+
+        Returns:
+            CatalogStats with aggregate counts and coverage metrics
+        """
+        with httpx.Client(timeout=self.config.timeout) as client:
+            response = client.get(
+                f"{self.config.service_url}/catalog/stats",
+                headers=self._get_headers(),
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        return CatalogStats(
+            total_monikers=data.get("total_monikers", 0),
+            by_status=data.get("by_status", {}),
+            by_source_type=data.get("by_source_type", {}),
+            by_classification=data.get("by_classification", {}),
+            ownership_coverage=data.get("ownership_coverage", 0.0),
+        )
+
+    def schema(self, moniker: str) -> SchemaInfo:
+        """
+        Get schema information for a moniker.
+
+        Extracts schema from the metadata endpoint.
+
+        Args:
+            moniker: Moniker path (with or without scheme)
+
+        Returns:
+            SchemaInfo with column definitions and metadata
+        """
+        meta = self.metadata(moniker)
+        schema = meta.schema or {}
+        return SchemaInfo(
+            moniker=meta.moniker,
+            path=meta.path,
+            columns=schema.get("columns", []),
+            primary_key=schema.get("primary_key"),
+            description=meta.description,
+            granularity=schema.get("granularity"),
+            semantic_tags=meta.semantic_tags,
+            related_monikers=[
+                r.get("moniker", "") for r in (meta.relationships or {}).get("related", [])
+            ] if meta.relationships else [],
+        )
+
     def _resolve(self, moniker: str) -> ResolvedSource:
-        """Internal resolve with caching."""
+        """Internal resolve with caching, retry, and circuit breaker."""
         # Check cache
         if self.config.cache_ttl > 0 and moniker in self._cache:
             resolved, cached_at = self._cache[moniker]
@@ -676,39 +943,73 @@ class MonikerClient:
 
         path = moniker.replace("moniker://", "")
 
-        with httpx.Client(timeout=self.config.timeout) as client:
-            response = client.get(
-                f"{self.config.service_url}/resolve/{path}",
-                headers=self._get_headers(),
+        self._circuit_breaker.before_request()
+        try:
+            def _do_resolve():
+                with httpx.Client(timeout=self.config.timeout) as client:
+                    response = client.get(
+                        f"{self.config.service_url}/resolve/{path}",
+                        headers=self._get_headers(),
+                    )
+
+                    if response.status_code == 404:
+                        raise NotFoundError(f"No source binding for: {path}")
+
+                    if response.status_code != 200:
+                        raise ResolutionError(f"Resolution failed: {response.text}")
+
+                    return response.json()
+
+            data = retry_with_backoff(_do_resolve, self._retry_config)
+
+            resolved = ResolvedSource(
+                moniker=data["moniker"],
+                path=data["path"],
+                source_type=data["source_type"],
+                connection=data["connection"],
+                query=data.get("query"),
+                params=data.get("params", {}),
+                schema_info=data.get("schema_info"),
+                read_only=data.get("read_only", True),
+                ownership=data.get("ownership", {}),
+                binding_path=data.get("binding_path", ""),
+                sub_path=data.get("sub_path"),
+                status=data.get("status"),
+                deprecation_message=data.get("deprecation_message"),
+                successor=data.get("successor"),
+                sunset_deadline=data.get("sunset_deadline"),
+                migration_guide_url=data.get("migration_guide_url"),
+                redirected_from=data.get("redirected_from"),
             )
 
-            if response.status_code == 404:
-                raise NotFoundError(f"No source binding for: {path}")
+            # Emit deprecation warnings if applicable (gated by feature toggle)
+            if (getattr(self.config, 'deprecation_enabled', False)
+                    and resolved.is_deprecated
+                    and getattr(self.config, 'warn_on_deprecated', True)):
+                msg = (
+                    f"Moniker '{resolved.path}' is deprecated."
+                    f"{' ' + resolved.deprecation_message if resolved.deprecation_message else ''}"
+                    f"{' Successor: ' + resolved.successor if resolved.successor else ''}"
+                )
+                warnings.warn(msg, DeprecationWarning, stacklevel=3)
+                logging.getLogger("moniker_client").warning(msg)
 
-            if response.status_code != 200:
-                raise ResolutionError(f"Resolution failed: {response.text}")
+                # Invoke callback if configured
+                callback = getattr(self.config, 'deprecation_callback', None)
+                if callback:
+                    callback(resolved.path, resolved.deprecation_message, resolved.successor)
 
-            data = response.json()
+            # Cache
+            if self.config.cache_ttl > 0:
+                self._cache[moniker] = (resolved, time.time())
 
-        resolved = ResolvedSource(
-            moniker=data["moniker"],
-            path=data["path"],
-            source_type=data["source_type"],
-            connection=data["connection"],
-            query=data.get("query"),
-            params=data.get("params", {}),
-            schema_info=data.get("schema_info"),
-            read_only=data.get("read_only", True),
-            ownership=data.get("ownership", {}),
-            binding_path=data.get("binding_path", ""),
-            sub_path=data.get("sub_path"),
-        )
-
-        # Cache
-        if self.config.cache_ttl > 0:
-            self._cache[moniker] = (resolved, time.time())
-
-        return resolved
+            self._circuit_breaker.on_success()
+            return resolved
+        except NotFoundError:
+            raise  # Don't count 404s as circuit breaker failures
+        except Exception:
+            self._circuit_breaker.on_failure()
+            raise
 
     def _get_headers(self) -> dict[str, str]:
         """Build request headers including authentication."""
@@ -732,6 +1033,8 @@ class MonikerClient:
         source_type: str | None,
         row_count: int | None,
         error_message: str | None,
+        deprecated: bool = False,
+        successor: str | None = None,
     ) -> None:
         """Report access telemetry back to the service."""
         try:
@@ -746,6 +1049,8 @@ class MonikerClient:
                         "source_type": source_type,
                         "row_count": row_count,
                         "error_message": error_message,
+                        "deprecated": deprecated,
+                        "successor": successor,
                     },
                 )
         except Exception:
@@ -867,3 +1172,27 @@ def print_tree(
     """
     t = tree(moniker, depth=depth)
     return t.print(show_ownership=show_ownership, show_source=show_source)
+
+
+def search(query: str, status: str | None = None, limit: int = 50) -> SearchResult:
+    """
+    Search the catalog for monikers matching a query.
+
+    Usage:
+        from moniker_client import search
+        results = search("equity")
+        print(results.total_results)
+    """
+    return _get_client().search(query, status=status, limit=limit)
+
+
+def catalog_stats() -> CatalogStats:
+    """
+    Get catalog statistics.
+
+    Usage:
+        from moniker_client import catalog_stats
+        stats = catalog_stats()
+        print(stats.total_monikers)
+    """
+    return _get_client().catalog_stats()

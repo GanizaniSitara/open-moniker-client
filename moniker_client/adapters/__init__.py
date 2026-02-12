@@ -16,6 +16,7 @@ from .static import StaticAdapter
 from .excel import ExcelAdapter
 from .bloomberg import BloombergAdapter
 from .refinitiv import RefinitivAdapter
+from .mssql import MSSQLAdapter
 
 
 # Registry of adapters
@@ -27,6 +28,7 @@ _adapters: dict[str, BaseAdapter] = {
     "excel": ExcelAdapter(),
     "bloomberg": BloombergAdapter(),
     "refinitiv": RefinitivAdapter(),
+    "mssql": MSSQLAdapter(),
 }
 
 
@@ -54,4 +56,5 @@ __all__ = [
     "ExcelAdapter",
     "BloombergAdapter",
     "RefinitivAdapter",
+    "MSSQLAdapter",
 ]

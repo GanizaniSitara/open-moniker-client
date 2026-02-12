@@ -50,12 +50,17 @@ from .client import (
     sample,
     tree,
     print_tree,
+    search,
+    catalog_stats,
     # Result types
     FetchResult,
     MetadataResult,
     SampleResult,
     ResolvedSource,
     TreeNode,
+    SearchResult,
+    CatalogStats,
+    SchemaInfo,
     # Exceptions
     MonikerError,
     ResolutionError,
@@ -64,6 +69,8 @@ from .client import (
     AccessDeniedError,
 )
 from .config import ClientConfig
+from .resilience import RetryConfig, ClientCircuitBreaker
+from .reflection import CatalogReflector
 
 __version__ = "0.1.0"
 
@@ -82,12 +89,22 @@ __all__ = [
     "sample",
     "tree",
     "print_tree",
+    "search",
+    "catalog_stats",
     # Result types
     "FetchResult",
     "MetadataResult",
     "SampleResult",
     "ResolvedSource",
     "TreeNode",
+    "SearchResult",
+    "CatalogStats",
+    "SchemaInfo",
+    # Reflection
+    "CatalogReflector",
+    # Resilience
+    "RetryConfig",
+    "ClientCircuitBreaker",
     # Exceptions
     "MonikerError",
     "ResolutionError",
