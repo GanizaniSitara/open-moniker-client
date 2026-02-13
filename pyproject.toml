@@ -19,32 +19,22 @@ classifiers = [
 
 dependencies = [
     "httpx>=0.26.0",
+    "pyyaml>=6.0",
+    # Database adapters
+    "snowflake-connector-python>=3.6.0",
+    "oracledb>=2.0.0",
+    # File formats
+    "openpyxl>=3.1.0",
+    "pyarrow>=14.0.0",
 ]
 
 [project.optional-dependencies]
-# Database connections
-snowflake = ["snowflake-connector-python>=3.6.0"]
-oracle = ["oracledb>=2.0.0"]
-
-# File formats
-excel = ["openpyxl>=3.1.0"]
-parquet = ["pyarrow>=14.0.0"]
-
-# Authentication (Kerberos SPNEGO)
+# Authentication (Kerberos SPNEGO) - not always needed
 auth = ["gssapi>=1.8.0"]
 
 # Financial data providers (require commercial licenses)
 bloomberg = ["blpapi>=3.19.0"]
 refinitiv = ["eikon>=1.1.0", "refinitiv-data>=1.5.0"]
-
-# All common adapters (excluding commercial)
-all = [
-    "snowflake-connector-python>=3.6.0",
-    "oracledb>=2.0.0",
-    "openpyxl>=3.1.0",
-    "pyarrow>=14.0.0",
-    "gssapi>=1.8.0",
-]
 
 # Development
 dev = [

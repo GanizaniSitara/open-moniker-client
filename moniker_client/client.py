@@ -758,10 +758,10 @@ _default_client: MonikerClient | None = None
 
 
 def _get_client() -> MonikerClient:
-    """Get or create the default client."""
+    """Get or create the default client (loads config from files)."""
     global _default_client
     if _default_client is None:
-        _default_client = MonikerClient()
+        _default_client = MonikerClient(config=ClientConfig.load())
     return _default_client
 
 

@@ -192,3 +192,63 @@ def mock_oracle_connection(mock_oracle_cursor):
         conn.ping.return_value = None
         return conn
     return _factory
+
+
+# =============================================================================
+# Snowflake Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def snowflake_resolved_source():
+    """Pre-configured ResolvedSource for Snowflake tests."""
+    return MockResolvedSource(
+        moniker="test/snowflake/data",
+        path="test/snowflake/data",
+        source_type="snowflake",
+        connection={
+            "account": "test-account",
+            "warehouse": "TEST_WH",
+            "database": "TEST_DB",
+            "schema": "PUBLIC",
+        },
+        query="SELECT * FROM test_table",
+        params={},
+    )
+
+
+@pytest.fixture
+def snowflake_config():
+    """Pre-configured ClientConfig for Snowflake tests."""
+    return MockClientConfig(
+        snowflake_user="test_user",
+        snowflake_password="test_password",
+    )
+
+
+@pytest.fixture
+def mock_snowflake_cursor():
+    """Factory fixture for creating mock Snowflake cursor."""
+    def _factory(
+        columns: list[str] | None = None,
+        rows: list[tuple] | None = None,
+    ):
+        cursor = MagicMock()
+        cursor.description = [(col, None, None, None, None, None, None) for col in (columns or [])]
+        cursor.fetchall.return_value = rows or []
+        return cursor
+    return _factory
+
+
+@pytest.fixture
+def mock_snowflake_connection(mock_snowflake_cursor):
+    """Factory fixture for creating mock Snowflake connection."""
+    def _factory(
+        columns: list[str] | None = None,
+        rows: list[tuple] | None = None,
+    ):
+        conn = MagicMock()
+        cursor = mock_snowflake_cursor(columns=columns, rows=rows)
+        conn.cursor.return_value = cursor
+        return conn
+    return _factory
