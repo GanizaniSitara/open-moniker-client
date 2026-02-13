@@ -1,0 +1,27 @@
+# Moniker Client Configuration
+# Copy to ~/.moniker/client.yaml or .moniker.yaml
+
+service_url: http://localhost:8050
+
+# Identity (for telemetry)
+app_id: my-app
+team: my-team
+
+# Request settings
+timeout: 30
+cache_ttl: 60
+report_telemetry: true
+
+# Retry configuration
+retry_max_attempts: 3
+retry_backoff_factor: 0.5
+
+# Authentication (optional)
+# auth_method: kerberos
+# kerberos_service_principal: HTTP/moniker-svc@REALM
+
+# Database credentials (optional - can also use env vars)
+# snowflake_user: user
+# snowflake_password: pass
+# oracle_user: user
+# oracle_password: pass

@@ -3,11 +3,45 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..client import ResolvedSource
     from ..config import ClientConfig
+
+
+@dataclass
+class AdapterResult:
+    """
+    Result from adapter fetch operations.
+
+    Aligns with service response structure and includes timing/execution metadata.
+    """
+
+    data: Any
+    """The fetched data (usually list of dicts or dict)."""
+
+    row_count: int | None = None
+    """Number of rows/items returned."""
+
+    columns: list[str] = field(default_factory=list)
+    """Column names if applicable."""
+
+    execution_time_ms: float | None = None
+    """Time taken to execute the query/fetch in milliseconds."""
+
+    source_type: str | None = None
+    """Type of source adapter used."""
+
+    query_executed: str | None = None
+    """The actual query that was executed (for debugging)."""
+
+    truncated: bool = False
+    """Whether results were truncated due to limits."""
+
+    metadata: dict[str, Any] = field(default_factory=dict)
+    """Additional metadata from the fetch operation."""
 
 
 class BaseAdapter(ABC):
@@ -49,3 +83,21 @@ class BaseAdapter(ABC):
         Default returns empty - override for sources that support it.
         """
         return []
+
+    def health_check(
+        self,
+        resolved: ResolvedSource,
+        config: ClientConfig,
+    ) -> dict[str, Any]:
+        """
+        Check health/connectivity of the data source.
+
+        Returns:
+            Dict with at least 'healthy' (bool) and optionally:
+            - 'latency_ms': Connection latency
+            - 'message': Status message
+            - 'details': Additional diagnostic info
+
+        Default returns healthy=True - override for sources that support it.
+        """
+        return {"healthy": True, "message": "Health check not implemented"}
