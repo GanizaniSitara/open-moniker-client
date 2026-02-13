@@ -49,6 +49,11 @@ htmlcov/
 *.swp
 *.swo
 
+# Shell/batch scripts (trip corporate DLP scanners)
+*.sh
+*.cmd
+*.bat
+
 # Environment
 .env
 .venv/
