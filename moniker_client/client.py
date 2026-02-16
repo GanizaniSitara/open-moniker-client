@@ -54,6 +54,19 @@ class FetchResult:
     query_executed: str | None = None
     execution_time_ms: float | None = None
 
+    def to_dataframe(self):
+        """Convert result to pandas DataFrame."""
+        try:
+            import pandas as pd
+            return pd.DataFrame(self.data)
+        except ImportError:
+            raise ImportError("pandas is required for to_dataframe(). Install with: pip install pandas")
+
+    @property
+    def df(self):
+        """Lazy DataFrame property."""
+        return self.to_dataframe()
+
 
 @dataclass
 class MetadataResult:
@@ -645,15 +658,14 @@ class MonikerClient:
         moniker: str,
         limit: int | None = None,
         **params,
-    ) -> FetchResult:
+    ):
         """
         Fetch data via server-side query execution.
 
         Unlike read(), this executes the query on the server and returns
-        the data directly. Useful when:
+        a pandas DataFrame directly. Useful when:
         - Client doesn't have direct source access
         - You want server-side query optimization
-        - You need execution timing info
 
         Args:
             moniker: Moniker path (with or without scheme)
@@ -661,7 +673,7 @@ class MonikerClient:
             **params: Additional query parameters
 
         Returns:
-            FetchResult with data and execution metadata
+            pandas DataFrame with the fetched data
         """
         if not moniker.startswith("moniker://"):
             moniker = f"moniker://{moniker}"
@@ -690,17 +702,12 @@ class MonikerClient:
 
             data = response.json()
 
-        return FetchResult(
-            moniker=data["moniker"],
-            path=data["path"],
-            source_type=data["source_type"],
-            row_count=data["row_count"],
-            columns=data["columns"],
-            data=data["data"],
-            truncated=data.get("truncated", False),
-            query_executed=data.get("query_executed"),
-            execution_time_ms=data.get("execution_time_ms"),
-        )
+        # Return DataFrame directly for simplicity
+        try:
+            import pandas as pd
+            return pd.DataFrame(data["data"])
+        except ImportError:
+            raise ImportError("pandas is required for fetch(). Install with: pip install pandas")
 
     def metadata(self, moniker: str) -> MetadataResult:
         """
