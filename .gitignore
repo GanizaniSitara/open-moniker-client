@@ -1,6 +1,9 @@
 # Project status (local reference doc)
 PROJECT_STATUS.md
 
+# Local Claude Code documentation
+CLAUDE.md
+
 # Local config (credentials)
 .moniker.yaml
 
